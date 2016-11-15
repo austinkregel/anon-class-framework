@@ -1,6 +1,5 @@
 <?php
-function cacheFile($path, $file, $params = []){
-}
+
 function view($file, $params = []) {
     $path = __DIR__ .'/cache/'.sha1($file).'.php';
     // The cached file doesn't exist, so lets create it ina very gross way.. :)
@@ -20,36 +19,81 @@ function view($file, $params = []) {
     ob_end_clean();
     return $contents;
 }
+
+function missingPage() {
+    return new class {
+        public function serve() {
+            return [
+                'message' => 'The page you requested has gone missing!',
+                'code' => sha1($_SERVER['REQUEST_URI'].time()),
+                'status' => 404
+            ];
+        }
+    };
+}
+$database = new class extends PDO {
+
+};
+/**
+ * @var $router
+ */
 $router = new class {
 
     protected $routes = [];
 
-    public function get($route, $controller) {
-        $this->routes[trim($route, '/')] = $controller;
+    protected $types = [];
+    public function __call($name, $arguments)
+    {
+        $types = ['get','delete','post','put','head'];
+        if(in_array($name, $types)){
+            list($route, $controller) = $arguments;
+            $this->routes[trim($route,'/')] = $controller;
+            $this->types[trim($route, '/')] = $name;
+        }
     }
 
     public function serve() {
+        // We must grab the requested URI to later compare against our current routes.
         $uri = trim($_SERVER['REQUEST_URI'], '/');
+        // We also must grab the method of which we request.
+        $method = $_SERVER['REQUEST_METHOD'];
+        // Now we must compare how we're getting the data to what
+        // Our app is allowing.
+        if($this->types[$uri] === $method) {
+            $this->routes[$uri] = missingPage();
+        }
+
         $controller = $this->routes[$uri];
         if(empty($controller))
         {
-            throw new \Exception("Controller [{$uri}] not found!");
+            $this->routes[$uri] = missingPage();
         }
 
         // If the uri is empty that means that the URI is the index page
-        return call_user_func_array([$this->routes[$uri], 'serve'], []);
+        return new class(call_user_func_array([$this->routes[$uri], 'serve'], [])) {
+            protected $result;
+            public function __construct($result)
+            {
+                $this->result = $result;
+            }
+
+            public function __toString()
+            {
+                if(is_array($this->result)){
+                    header('Content-type: application/json');
+                    if($this->result['status']){
+                        http_response_code($this->result['status']);
+                    }
+                    return json_encode($this->result);
+                } else if(is_object($this->result)){
+                    header('Content-type: application/json');
+                    return json_encode($this->result->toArray());
+                }
+                return $this->result;
+            }
+        };
     }
 };
-
-    $router->get('/', new class {
-        public function serve() {
-            return 'hello!';
-        }
-    });
-    $router->get('/some-page', new class {
-        public function serve() {
-            return view('views/page.php', ['page' => $_SERVER['REQUEST_URI']]);
-        }
-    });
+include 'api.php';
 
 echo $router->serve();
